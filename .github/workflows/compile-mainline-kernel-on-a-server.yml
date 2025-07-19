@@ -13,15 +13,19 @@ on:
       kernel_source:
         description: "Select the kernel source"
         required: false
-        default: "unifreq"
+        default: "xidz-repo"
         type: choice
         options:
           - unifreq
           - codesnas
+          - xidz-repo
+          - de-quenx
+          - dirgha80
+          - houjie80
       kernel_version:
         description: "Select kernel version"
         required: false
-        default: "5.4.y"
+        default: "5.15.y"
         type: choice
         options:
           - 5.4.y
@@ -81,11 +85,11 @@ on:
       kernel_sign:
         description: "Set the kernel custom signature"
         required: false
-        default: "-ophub"
+        default: "-Missquenx+"
         type: choice
         options:
           - -ophub
-          - -yourname
+          - -Missquenx+
 
 env:
   TZ: America/New_York
@@ -146,12 +150,12 @@ jobs:
         run: |
           df -hT ${PWD}
           mkdir -p /builder/{kernel,output}
-          ln -sf /builder/kernel /home/runner/work/_actions/ophub/amlogic-s9xxx-armbian/main/compile-kernel/kernel
-          ln -sf /builder/output /home/runner/work/_actions/ophub/amlogic-s9xxx-armbian/main/compile-kernel/output
+          ln -sf /builder/kernel /home/runner/work/_actions/xidz-repo/amlogic-s9xxx-armbian/main/compile-kernel/kernel
+          ln -sf /builder/output /home/runner/work/_actions/xidz-repo/amlogic-s9xxx-armbian/main/compile-kernel/output
           echo "status=success" >> ${GITHUB_OUTPUT}
 
       - name: Compile the kernel [ ${{ inputs.kernel_version }} ]
-        uses: ophub/amlogic-s9xxx-armbian@main
+        uses: xidz-repo/amlogic-s9xxx-armbian@main
         if: ${{ steps.mapped.outputs.status }} == 'success' && !cancelled()
         with:
           build_target: kernel
