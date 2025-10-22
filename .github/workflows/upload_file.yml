@@ -1,0 +1,120 @@
+name: Download Multiple File Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      download_urls:
+        description: 'Multiple URLs (pisahkan dengan spasi)'
+        required: true
+        type: string
+      tag_name:
+        description: 'Nama tag dan release'
+        required: false
+        type: string
+        default: 'file_custom'
+
+jobs:
+  download-and-release:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      
+    - name: Download multiple files
+      id: download
+      run: |
+        echo "Processing multiple URLs..."
+        
+        # Parse URLs (space separated)
+        urls="${{ inputs.download_urls }}"
+        
+        downloaded_files=""
+        
+        counter=1
+        for url in $urls; do
+          # Skip empty entries
+          if [ -z "$url" ]; then
+            continue
+          fi
+          
+          echo "[$counter] Downloading: $url"
+          
+          # Download file
+          if curl -L --fail -o "temp_$counter" "$url"; then
+            # Get filename from URL
+            filename=$(basename "$url")
+            
+            # Rename file
+            mv "temp_$counter" "$filename"
+            
+            # Get file size
+            file_size_human=$(ls -lh "$filename" | awk '{print $5}')
+            
+            # Add to downloaded files list
+            if [ -z "$downloaded_files" ]; then
+              downloaded_files="$filename"
+            else
+              downloaded_files="$downloaded_files $filename"
+            fi
+            
+            echo "Downloaded: $filename ($file_size_human)"
+            counter=$((counter + 1))
+          else
+            echo "Failed to download: $url"
+          fi
+        done
+        
+        total_files=$((counter - 1))
+        
+        # Save outputs
+        echo "downloaded_files=$downloaded_files" >> $GITHUB_OUTPUT
+        echo "total_files=$total_files" >> $GITHUB_OUTPUT
+        
+        # Check if any files downloaded
+        if [ $total_files -eq 0 ]; then
+          echo "Error: No files were downloaded successfully"
+          exit 1
+        fi
+        
+        echo "Total downloaded: $total_files files"
+
+    - name: Check if release exists
+      id: check
+      continue-on-error: true
+      run: |
+        if gh release view ${{ inputs.tag_name }} >/dev/null 2>&1; then
+          echo "exists=true" >> $GITHUB_OUTPUT
+          echo "Release ${{ inputs.tag_name }} already exists"
+        else
+          echo "exists=false" >> $GITHUB_OUTPUT
+          echo "Release ${{ inputs.tag_name }} does not exist"
+        fi
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Delete existing release if exists
+      if: steps.check.outputs.exists == 'true'
+      run: |
+        echo "Deleting existing release and tag..."
+        gh release delete ${{ inputs.tag_name }} -y
+        git push --delete origin ${{ inputs.tag_name }}
+        echo "Deleted successfully"
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Create release with multiple files
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: ${{ inputs.tag_name }}
+        name: ${{ inputs.tag_name }}
+        body: ''
+        files: ${{ steps.download.outputs.downloaded_files }}
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Success
+      run: |
+        echo "Release ${{ inputs.tag_name }} created successfully!"
+        echo "Total files: ${{ steps.download.outputs.total_files }}"
+        echo "Files: ${{ steps.download.outputs.downloaded_files }}"
