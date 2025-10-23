@@ -12,6 +12,14 @@ on:
         required: false
         type: string
         default: 'kernel_custom'
+      action_type:
+        description: 'Pilih aksi setelah download'
+        required: true
+        type: choice
+        options:
+          - 'upload_to_release'
+          - 'extract_to_folder'
+        default: 'upload_to_release'
 
 jobs:
   download-and-release:
@@ -27,17 +35,18 @@ jobs:
     - name: Download multiple files
       id: download
       run: |
-        echo "Processing multiple URLs..."
+        echo "Downloading files..."
         
         urls="${{ inputs.download_urls }}"
         
         counter=1
+        downloaded_files=""
         for url in $urls; do
           if [ -z "$url" ]; then
             continue
           fi
           
-          echo "[$counter] Downloading: $url"
+          echo "Downloading: $url"
           
           if curl -L --fail -o "temp_$counter" "$url"; then
             filename=$(basename "$url")
@@ -45,9 +54,16 @@ jobs:
             
             file_size=$(ls -lh "downloads/$filename" | awk '{print $5}')
             echo "Downloaded: $filename ($file_size)"
+            
+            if [ -z "$downloaded_files" ]; then
+              downloaded_files="$filename"
+            else
+              downloaded_files="$downloaded_files|$filename"
+            fi
+            
             counter=$((counter + 1))
           else
-            echo "Failed to download: $url"
+            echo "Failed: $url"
           fi
         done
         
@@ -59,11 +75,103 @@ jobs:
         fi
         
         echo "total_files=$total_files" >> $GITHUB_OUTPUT
-        echo "Total downloaded: $total_files files"
+        echo "downloaded_files=$downloaded_files" >> $GITHUB_OUTPUT
+        echo "Total files: $total_files"
         
         ls -lh downloads/
 
+    - name: Extract files to folders
+      if: inputs.action_type == 'extract_to_folder'
+      run: |
+        echo "Extracting files..."
+        
+        IFS='|' read -ra FILENAMES <<< "${{ steps.download.outputs.downloaded_files }}"
+        
+        for filename in "${FILENAMES[@]}"; do
+          if [ -f "downloads/$filename" ]; then
+            echo "Processing: $filename"
+            
+            folder_name=$(echo "$filename" | sed 's/\.[^.]*$//')
+            folder_name=$(echo "$folder_name" | sed 's/[^a-zA-Z0-9._-]/_/g')
+            
+            echo "Folder: $folder_name"
+            mkdir -p "$folder_name"
+            
+            case "$filename" in
+              *.zip)
+                unzip -q "downloads/$filename" -d "$folder_name/" || echo "Failed to extract"
+                ;;
+              *.tar.gz|*.tgz)
+                tar -xzf "downloads/$filename" -C "$folder_name/" || echo "Failed to extract"
+                ;;
+              *.tar.bz2|*.tbz2)
+                tar -xjf "downloads/$filename" -C "$folder_name/" || echo "Failed to extract"
+                ;;
+              *.tar.xz|*.txz)
+                tar -xJf "downloads/$filename" -C "$folder_name/" || echo "Failed to extract"
+                ;;
+              *.tar)
+                tar -xf "downloads/$filename" -C "$folder_name/" || echo "Failed to extract"
+                ;;
+              *.7z)
+                7z x "downloads/$filename" -o"$folder_name/" || echo "Failed to extract"
+                ;;
+              *.rar)
+                unrar x "downloads/$filename" "$folder_name/" || echo "Failed to extract"
+                ;;
+              *.gz)
+                gunzip -c "downloads/$filename" > "$folder_name/$(basename "$filename" .gz)" || echo "Failed to extract"
+                ;;
+              *)
+                cp "downloads/$filename" "$folder_name/"
+                ;;
+            esac
+            
+            if [ -d "$folder_name" ]; then
+              file_count=$(find "$folder_name" -type f | wc -l)
+              folder_size=$(du -sh "$folder_name" 2>/dev/null | cut -f1 || echo "Unknown")
+              echo "Extracted: $folder_name ($file_count files, $folder_size)"
+              echo ""
+            fi
+          fi
+        done
+        
+        echo "Summary:"
+        for dir in */; do
+          if [ -d "$dir" ]; then
+            file_count=$(find "$dir" -type f | wc -l)
+            folder_size=$(du -sh "$dir" | cut -f1)
+            echo "$dir - $file_count files ($folder_size)"
+          fi
+        done
+
+    - name: Commit to repository
+      if: inputs.action_type == 'extract_to_folder'
+      run: |
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+        
+        for dir in */; do
+          if [ -d "$dir" ] && [ "$dir" != "downloads/" ]; then
+            git add "$dir"
+          fi
+        done
+        
+        if git diff --staged --quiet; then
+          echo "No changes to commit"
+        else
+          commit_msg="Add extracted files
+
+Files: ${{ steps.download.outputs.total_files }}
+Date: $(date)"
+          
+          git commit -m "$commit_msg"
+          git push
+          echo "Pushed to repository"
+        fi
+
     - name: Check if release exists
+      if: inputs.action_type == 'upload_to_release'
       id: check
       continue-on-error: true
       run: |
@@ -75,27 +183,37 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-    - name: Delete existing release if exists
-      if: steps.check.outputs.exists == 'true'
+    - name: Delete existing release
+      if: inputs.action_type == 'upload_to_release' && steps.check.outputs.exists == 'true'
       run: |
         gh release delete ${{ inputs.tag_name }} -y
         git push --delete origin ${{ inputs.tag_name }}
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-    - name: Create release with multiple files
+    - name: Create release
+      if: inputs.action_type == 'upload_to_release'
       uses: softprops/action-gh-release@v1
       with:
         tag_name: ${{ inputs.tag_name }}
         name: ${{ inputs.tag_name }}
-        body: ''
+        body: |
+          Downloaded Files Release
+          
+          Sources: ${{ inputs.download_urls }}
+          Total Files: ${{ steps.download.outputs.total_files }}
+          Date: ${{ github.run_id }}
         files: downloads/*
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-    - name: Success
+    - name: Summary
       run: |
-        echo "Release ${{ inputs.tag_name }} created successfully!"
-        echo "Total files: ${{ steps.download.outputs.total_files }}"
-        echo "Uploaded files:"
-        ls -1 downloads/
+        if [ "${{ inputs.action_type }}" = "upload_to_release" ]; then
+          echo "Release created: ${{ inputs.tag_name }}"
+          echo "Total files: ${{ steps.download.outputs.total_files }}"
+          ls -1 downloads/
+        else
+          echo "Extracted to folders:"
+          ls -d */ | grep -v "downloads/"
+        fi
