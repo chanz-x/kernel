@@ -1,4 +1,4 @@
-name: Gabuter Files
+name: Gabut WGG
 
 on:
   workflow_dispatch:
@@ -97,7 +97,23 @@ jobs:
           if [ -f "downloads/$filename" ]; then
             echo "Processing: $filename"
             
-            folder_name=$(echo "$filename" | sed 's/\.[^.]*$//')
+            # Remove all extensions (.tar.gz, .tar, .zip, etc)
+            folder_name="$filename"
+            
+            # Remove common archive extensions
+            folder_name="${folder_name%.tar.gz}"
+            folder_name="${folder_name%.tar.bz2}"
+            folder_name="${folder_name%.tar.xz}"
+            folder_name="${folder_name%.tgz}"
+            folder_name="${folder_name%.tbz2}"
+            folder_name="${folder_name%.txz}"
+            folder_name="${folder_name%.tar}"
+            folder_name="${folder_name%.zip}"
+            folder_name="${folder_name%.7z}"
+            folder_name="${folder_name%.rar}"
+            folder_name="${folder_name%.gz}"
+            
+            # Clean special characters
             folder_name=$(echo "$folder_name" | sed 's/[^a-zA-Z0-9._-]/_/g')
             
             echo "Folder: $folder_name"
@@ -136,7 +152,10 @@ jobs:
             # Fix nested folders for ZIP files
             if [[ "$filename" == *.zip ]]; then
               subdirs=$(find "$folder_name" -mindepth 1 -maxdepth 1 -type d)
-              if [ $(echo "$subdirs" | wc -l) -eq 1 ] && [ $(find "$folder_name" -mindepth 1 -maxdepth 1 -type f | wc -l) -eq 0 ]; then
+              subdir_count=$(echo "$subdirs" | grep -c .)
+              file_count=$(find "$folder_name" -mindepth 1 -maxdepth 1 -type f | wc -l)
+              
+              if [ $subdir_count -eq 1 ] && [ $file_count -eq 0 ]; then
                 subdir=$(echo "$subdirs" | head -1)
                 echo "Moving contents from nested folder: $subdir"
                 mv "$subdir"/* "$folder_name"/ 2>/dev/null || true
@@ -148,7 +167,10 @@ jobs:
             # Fix nested folders for 7z files
             if [[ "$filename" == *.7z ]]; then
               subdirs=$(find "$folder_name" -mindepth 1 -maxdepth 1 -type d)
-              if [ $(echo "$subdirs" | wc -l) -eq 1 ] && [ $(find "$folder_name" -mindepth 1 -maxdepth 1 -type f | wc -l) -eq 0 ]; then
+              subdir_count=$(echo "$subdirs" | grep -c .)
+              file_count=$(find "$folder_name" -mindepth 1 -maxdepth 1 -type f | wc -l)
+              
+              if [ $subdir_count -eq 1 ] && [ $file_count -eq 0 ]; then
                 subdir=$(echo "$subdirs" | head -1)
                 echo "Moving contents from nested folder: $subdir"
                 mv "$subdir"/* "$folder_name"/ 2>/dev/null || true
