@@ -160,12 +160,7 @@ jobs:
         if git diff --staged --quiet; then
           echo "No changes to commit"
         else
-          commit_msg="Add extracted files
-
-Files: ${{ steps.download.outputs.total_files }}
-Date: $(date)"
-          
-          git commit -m "$commit_msg"
+          git commit -m "Add extracted files - Files: ${{ steps.download.outputs.total_files }} - Date: $(date)"
           git push
           echo "Pushed to repository"
         fi
