@@ -5,8 +5,9 @@ on:
     inputs:
       download_urls:
         description: 'Multiple URLs (pisahkan dengan spasi)'
-        required: true
+        required: false
         type: string
+        default: ''
       tag_name:
         description: 'Nama tag dan release'
         required: false
@@ -36,9 +37,11 @@ jobs:
       uses: actions/checkout@v4
       
     - name: Create download directory
+      if: inputs.download_urls != ''
       run: mkdir -p downloads
       
     - name: Download multiple files
+      if: inputs.download_urls != ''
       id: download
       run: |
         echo "Downloading files..."
@@ -87,7 +90,7 @@ jobs:
         ls -lh downloads/
 
     - name: Extract files to folders
-      if: inputs.action_type == 'extract_to_folder' || inputs.action_type == 'create_archive'
+      if: (inputs.action_type == 'extract_to_folder' || inputs.action_type == 'create_archive') && inputs.download_urls != ''
       run: |
         echo "Extracting files..."
         
@@ -97,10 +100,7 @@ jobs:
           if [ -f "downloads/$filename" ]; then
             echo "Processing: $filename"
             
-            # Remove all extensions (.tar.gz, .tar, .zip, etc)
             folder_name="$filename"
-            
-            # Remove common archive extensions
             folder_name="${folder_name%.tar.gz}"
             folder_name="${folder_name%.tar.bz2}"
             folder_name="${folder_name%.tar.xz}"
@@ -112,8 +112,6 @@ jobs:
             folder_name="${folder_name%.7z}"
             folder_name="${folder_name%.rar}"
             folder_name="${folder_name%.gz}"
-            
-            # Clean special characters
             folder_name=$(echo "$folder_name" | sed 's/[^a-zA-Z0-9._-]/_/g')
             
             echo "Folder: $folder_name"
@@ -149,7 +147,6 @@ jobs:
                 ;;
             esac
             
-            # Fix nested folders for ZIP files
             if [[ "$filename" == *.zip ]]; then
               subdirs=$(find "$folder_name" -mindepth 1 -maxdepth 1 -type d)
               subdir_count=$(echo "$subdirs" | grep -c .)
@@ -164,7 +161,6 @@ jobs:
               fi
             fi
             
-            # Fix nested folders for 7z files
             if [[ "$filename" == *.7z ]]; then
               subdirs=$(find "$folder_name" -mindepth 1 -maxdepth 1 -type d)
               subdir_count=$(echo "$subdirs" | grep -c .)
@@ -201,38 +197,47 @@ jobs:
       if: inputs.action_type == 'create_archive'
       id: create_archive
       run: |
-        echo "Creating tar.gz archive..."
+        echo "Creating deterministic tar.gz archive..."
         
         target_folder="${{ inputs.target_folder }}"
         
         mkdir -p archives
         
-        # Determine what to archive and set archive name
         if [ -n "$target_folder" ]; then
-          # Archive specific folder
           if [ -d "$target_folder" ]; then
             echo "Archiving folder: $target_folder"
             
-            # Use folder name as archive name
             archive_name=$(echo "$target_folder" | sed 's|/$||' | sed 's/[^a-zA-Z0-9._-]/_/g')
             archive_file="${archive_name}.tar.gz"
             
-            tar -czf "archives/$archive_file" "$target_folder"
+            echo "Setting consistent timestamps..."
+            find "$target_folder" -exec touch -t 202301010000 {} \;
+            
+            echo "Creating deterministic archive..."
+            tar --sort=name \
+                --mtime='2023-01-01 00:00:00' \
+                --owner=0 \
+                --group=0 \
+                --numeric-owner \
+                -czf "archives/$archive_file" "$target_folder"
+                
             echo "archive_source=$target_folder" >> $GITHUB_OUTPUT
           else
             echo "Error: Folder '$target_folder' not found"
             echo "Available folders:"
-            ls -d */ | grep -v "downloads/"
+            ls -d */ 2>/dev/null | grep -v "downloads/" | grep -v "archives/" || echo "No folders found"
             exit 1
           fi
         else
-          # Archive all extracted folders
           echo "Archiving all extracted folders..."
           folders_to_archive=""
           folder_names=""
           
           for dir in */; do
             if [ -d "$dir" ] && [ "$dir" != "downloads/" ] && [ "$dir" != "archives/" ]; then
+              echo "Setting timestamps for: $dir"
+              find "$dir" -exec touch -t 202301010000 {} \;
+              
               folders_to_archive="$folders_to_archive $dir"
               clean_name=$(echo "$dir" | sed 's|/$||')
               if [ -z "$folder_names" ]; then
@@ -245,12 +250,12 @@ jobs:
           
           if [ -z "$folders_to_archive" ]; then
             echo "Error: No folders to archive"
+            echo "Available folders:"
+            ls -d */ 2>/dev/null || echo "No folders found"
             exit 1
           fi
           
-          # Create archive name from all folder names (limit length)
           if [ ${#folder_names} -gt 50 ]; then
-            # If too long, use generic name with count
             folder_count=$(echo $folders_to_archive | wc -w)
             archive_name="extracted_${folder_count}_folders"
           else
@@ -261,26 +266,49 @@ jobs:
           archive_file="${archive_name}.tar.gz"
           
           echo "Folders to archive:$folders_to_archive"
-          tar -czf "archives/$archive_file" $folders_to_archive
+          echo "Creating deterministic archive..."
+          tar --sort=name \
+              --mtime='2023-01-01 00:00:00' \
+              --owner=0 \
+              --group=0 \
+              --numeric-owner \
+              -czf "archives/$archive_file" $folders_to_archive
+              
           echo "archive_source=all folders" >> $GITHUB_OUTPUT
         fi
         
-        # Get archive info
         if [ -f "archives/$archive_file" ]; then
           archive_size=$(ls -lh "archives/$archive_file" | awk '{print $5}')
+          
+          echo "Generating SHA256 checksum..."
+          cd archives
+          
+          sha256_hash=$(sha256sum "$archive_file" | awk '{print $1}')
+          echo "$sha256_hash  $archive_file" > "${archive_file}.sha256"
+          
+          echo "Verifying checksum..."
+          if sha256sum -c "${archive_file}.sha256" --quiet; then
+            echo "SHA256 verification passed"
+          else
+            echo "SHA256 verification failed"
+            exit 1
+          fi
+          
+          cd ..
           
           echo "archive_file=$archive_file" >> $GITHUB_OUTPUT
           echo "archive_size=$archive_size" >> $GITHUB_OUTPUT
           echo "archive_name=$archive_name" >> $GITHUB_OUTPUT
+          echo "sha256_hash=$sha256_hash" >> $GITHUB_OUTPUT
           
           echo "Archive created successfully:"
           echo "Name: $archive_name"
           echo "File: $archive_file"
           echo "Size: $archive_size"
+          echo "SHA256: $sha256_hash"
           
-          # Verify archive
           echo ""
-          echo "Archive contents:"
+          echo "Archive contents preview:"
           tar -tzf "archives/$archive_file" | head -20
           total_files=$(tar -tzf "archives/$archive_file" | wc -l)
           if [ $total_files -gt 20 ]; then
@@ -296,27 +324,56 @@ jobs:
       run: |
         archive_file="${{ steps.create_archive.outputs.archive_file }}"
         archive_name="${{ steps.create_archive.outputs.archive_name }}"
+        sha256_hash="${{ steps.create_archive.outputs.sha256_hash }}"
         
-        # Check if release exists
         if gh release view ${{ inputs.tag_name }} >/dev/null 2>&1; then
           echo "Deleting existing release..."
           gh release delete ${{ inputs.tag_name }} -y
           git push --delete origin ${{ inputs.tag_name }} 2>/dev/null || true
         fi
         
-        # Create new release with archive
-        echo "Creating release with archive..."
+        download_urls="${{ inputs.download_urls }}"
+        if [ -n "$download_urls" ]; then
+          source_info="Downloaded from: $download_urls"
+        else
+          source_info="Source: Existing folders in repository"
+        fi
+        
+        echo "Creating release with archive and SHA256 file..."
         gh release create ${{ inputs.tag_name }} \
           "archives/$archive_file" \
+          "archives/${archive_file}.sha256" \
           --title "${{ inputs.tag_name }}" \
-          --notes "Archive: $archive_name
+          --notes "## Archive: $archive_name
         
-        Source: ${{ steps.create_archive.outputs.archive_source }}
-        Size: ${{ steps.create_archive.outputs.archive_size }}
-        Downloaded from: ${{ inputs.download_urls }}
-        Created: $(date)"
+        **Details:**
+        - Source: ${{ steps.create_archive.outputs.archive_source }}
+        - Size: ${{ steps.create_archive.outputs.archive_size }}
+        - SHA256: \`$sha256_hash\`
+        - $source_info
+        - Created: $(date -u)
+        - Archive Type: Deterministic (reproducible)
+        
+        **Files:**
+        - \`$archive_file\` - Main archive
+        - \`${archive_file}.sha256\` - SHA256 checksum file
+        
+        **SHA256 Checksum:**
+        \`\`\`
+        $sha256_hash  $archive_file
+        \`\`\`
+        
+        **Verification:**
+        \`\`\`bash
+        sha256sum -c ${archive_file}.sha256
+        \`\`\`
+        
+        **Note:** This archive is created with deterministic settings (consistent timestamps, ownership, and sorting) to ensure reproducible builds and consistent SHA256 checksums."
         
         echo "Release created successfully"
+        echo "Files uploaded:"
+        echo "  - $archive_file"
+        echo "  - ${archive_file}.sha256"
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -382,13 +439,23 @@ jobs:
         if [ "${{ inputs.action_type }}" = "upload_to_release" ]; then
           echo "Release created: ${{ inputs.tag_name }}"
           echo "Total files: ${{ steps.download.outputs.total_files }}"
-          ls -1 downloads/
+          ls -1 downloads/ 2>/dev/null || echo "No files"
         elif [ "${{ inputs.action_type }}" = "create_archive" ]; then
-          echo "Archive created: ${{ steps.create_archive.outputs.archive_file }}"
+          echo "Deterministic archive created successfully"
+          echo ""
+          echo "Archive: ${{ steps.create_archive.outputs.archive_file }}"
           echo "Size: ${{ steps.create_archive.outputs.archive_size }}"
+          echo "SHA256: ${{ steps.create_archive.outputs.sha256_hash }}"
           echo "Source: ${{ steps.create_archive.outputs.archive_source }}"
+          echo ""
           echo "Released as: ${{ inputs.tag_name }}"
+          echo ""
+          echo "Files uploaded:"
+          echo "  - ${{ steps.create_archive.outputs.archive_file }}"
+          echo "  - ${{ steps.create_archive.outputs.archive_file }}.sha256"
+          echo ""
+          echo "This archive uses deterministic settings for reproducible builds"
         else
           echo "Extracted to folders:"
-          ls -d */ | grep -v "downloads/"
+          ls -d */ 2>/dev/null | grep -v "downloads/" | grep -v "archives/" || echo "No folders"
         fi
