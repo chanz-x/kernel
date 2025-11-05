@@ -13,15 +13,19 @@ on:
       kernel_source:
         description: "Select the kernel source"
         required: false
-        default: "unifreq"
+        default: "chanz-x"
         type: choice
         options:
           - unifreq
           - codesnas
+          - chanz-x
+          - de-quenx
+          - dirgha80
+          - houjie80
       kernel_version:
         description: "Select kernel version"
         required: false
-        default: "6.12.y"
+        default: "5.15.y_6.1.y"
         type: choice
         options:
           - 5.4.y
@@ -88,19 +92,14 @@ on:
       kernel_sign:
         description: "Set the kernel custom signature"
         required: false
-        default: "-ophub"
+        default: "-quenx-99+"
         type: choice
         options:
           - -ophub
-          - -happy-new-year
-          - -dragon-boat-festival
-          - -mid-autumn-festival
-          - -happy-national-day
-          - -merry-christmas
-          - -spring-plowing
-          - -summer-growing
-          - -autumn-harvesting
-          - -winter-storing
+          - -quenx-99+
+          - -flippy-89+o
+          - -flippy-94+
+          - -flippy-94+o
           - -yourname
       kernel_config:
         description: "Set the path of kernel .config"
@@ -109,6 +108,8 @@ on:
         type: choice
         options:
           - kernel-config/release/general
+          - kernel-config/release/khusus
+          - kernel-config/release/flippy
           - false
 
 env:
