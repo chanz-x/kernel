@@ -1,0 +1,394 @@
+name: Gabut WGG
+
+on:
+  workflow_dispatch:
+    inputs:
+      download_urls:
+        description: 'Multiple URLs (pisahkan dengan spasi)'
+        required: true
+        type: string
+      tag_name:
+        description: 'Nama tag dan release'
+        required: false
+        type: string
+        default: 'kernel_custom'
+      action_type:
+        description: 'Pilih aksi setelah download'
+        required: true
+        type: choice
+        options:
+          - 'upload_to_release'
+          - 'extract_to_folder'
+          - 'create_archive'
+        default: 'upload_to_release'
+      target_folder:
+        description: 'Target folder untuk archive (kosongkan untuk semua hasil extract)'
+        required: false
+        type: string
+        default: ''
+
+jobs:
+  download-and-release:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      
+    - name: Create download directory
+      run: mkdir -p downloads
+      
+    - name: Download multiple files
+      id: download
+      run: |
+        echo "Downloading files..."
+        
+        urls="${{ inputs.download_urls }}"
+        
+        counter=1
+        downloaded_files=""
+        for url in $urls; do
+          if [ -z "$url" ]; then
+            continue
+          fi
+          
+          echo "Downloading: $url"
+          
+          if curl -L --fail -o "temp_$counter" "$url"; then
+            filename=$(basename "$url")
+            mv "temp_$counter" "downloads/$filename"
+            
+            file_size=$(ls -lh "downloads/$filename" | awk '{print $5}')
+            echo "Downloaded: $filename ($file_size)"
+            
+            if [ -z "$downloaded_files" ]; then
+              downloaded_files="$filename"
+            else
+              downloaded_files="$downloaded_files|$filename"
+            fi
+            
+            counter=$((counter + 1))
+          else
+            echo "Failed: $url"
+          fi
+        done
+        
+        total_files=$((counter - 1))
+        
+        if [ $total_files -eq 0 ]; then
+          echo "Error: No files downloaded"
+          exit 1
+        fi
+        
+        echo "total_files=$total_files" >> $GITHUB_OUTPUT
+        echo "downloaded_files=$downloaded_files" >> $GITHUB_OUTPUT
+        echo "Total files: $total_files"
+        
+        ls -lh downloads/
+
+    - name: Extract files to folders
+      if: inputs.action_type == 'extract_to_folder' || inputs.action_type == 'create_archive'
+      run: |
+        echo "Extracting files..."
+        
+        IFS='|' read -ra FILENAMES <<< "${{ steps.download.outputs.downloaded_files }}"
+        
+        for filename in "${FILENAMES[@]}"; do
+          if [ -f "downloads/$filename" ]; then
+            echo "Processing: $filename"
+            
+            # Remove all extensions (.tar.gz, .tar, .zip, etc)
+            folder_name="$filename"
+            
+            # Remove common archive extensions
+            folder_name="${folder_name%.tar.gz}"
+            folder_name="${folder_name%.tar.bz2}"
+            folder_name="${folder_name%.tar.xz}"
+            folder_name="${folder_name%.tgz}"
+            folder_name="${folder_name%.tbz2}"
+            folder_name="${folder_name%.txz}"
+            folder_name="${folder_name%.tar}"
+            folder_name="${folder_name%.zip}"
+            folder_name="${folder_name%.7z}"
+            folder_name="${folder_name%.rar}"
+            folder_name="${folder_name%.gz}"
+            
+            # Clean special characters
+            folder_name=$(echo "$folder_name" | sed 's/[^a-zA-Z0-9._-]/_/g')
+            
+            echo "Folder: $folder_name"
+            mkdir -p "$folder_name"
+            
+            case "$filename" in
+              *.zip)
+                unzip -q "downloads/$filename" -d "$folder_name/" || echo "Failed to extract"
+                ;;
+              *.tar.gz|*.tgz)
+                tar -xzf "downloads/$filename" -C "$folder_name/" --strip-components=1 || echo "Failed to extract"
+                ;;
+              *.tar.bz2|*.tbz2)
+                tar -xjf "downloads/$filename" -C "$folder_name/" --strip-components=1 || echo "Failed to extract"
+                ;;
+              *.tar.xz|*.txz)
+                tar -xJf "downloads/$filename" -C "$folder_name/" --strip-components=1 || echo "Failed to extract"
+                ;;
+              *.tar)
+                tar -xf "downloads/$filename" -C "$folder_name/" --strip-components=1 || echo "Failed to extract"
+                ;;
+              *.7z)
+                7z x "downloads/$filename" -o"$folder_name/" || echo "Failed to extract"
+                ;;
+              *.rar)
+                unrar x "downloads/$filename" "$folder_name/" || echo "Failed to extract"
+                ;;
+              *.gz)
+                gunzip -c "downloads/$filename" > "$folder_name/$(basename "$filename" .gz)" || echo "Failed to extract"
+                ;;
+              *)
+                cp "downloads/$filename" "$folder_name/"
+                ;;
+            esac
+            
+            # Fix nested folders for ZIP files
+            if [[ "$filename" == *.zip ]]; then
+              subdirs=$(find "$folder_name" -mindepth 1 -maxdepth 1 -type d)
+              subdir_count=$(echo "$subdirs" | grep -c .)
+              file_count=$(find "$folder_name" -mindepth 1 -maxdepth 1 -type f | wc -l)
+              
+              if [ $subdir_count -eq 1 ] && [ $file_count -eq 0 ]; then
+                subdir=$(echo "$subdirs" | head -1)
+                echo "Moving contents from nested folder: $subdir"
+                mv "$subdir"/* "$folder_name"/ 2>/dev/null || true
+                mv "$subdir"/.[^.]* "$folder_name"/ 2>/dev/null || true
+                rmdir "$subdir" 2>/dev/null || true
+              fi
+            fi
+            
+            # Fix nested folders for 7z files
+            if [[ "$filename" == *.7z ]]; then
+              subdirs=$(find "$folder_name" -mindepth 1 -maxdepth 1 -type d)
+              subdir_count=$(echo "$subdirs" | grep -c .)
+              file_count=$(find "$folder_name" -mindepth 1 -maxdepth 1 -type f | wc -l)
+              
+              if [ $subdir_count -eq 1 ] && [ $file_count -eq 0 ]; then
+                subdir=$(echo "$subdirs" | head -1)
+                echo "Moving contents from nested folder: $subdir"
+                mv "$subdir"/* "$folder_name"/ 2>/dev/null || true
+                mv "$subdir"/.[^.]* "$folder_name"/ 2>/dev/null || true
+                rmdir "$subdir" 2>/dev/null || true
+              fi
+            fi
+            
+            if [ -d "$folder_name" ]; then
+              file_count=$(find "$folder_name" -type f | wc -l)
+              folder_size=$(du -sh "$folder_name" 2>/dev/null | cut -f1 || echo "Unknown")
+              echo "Extracted: $folder_name ($file_count files, $folder_size)"
+              echo ""
+            fi
+          fi
+        done
+        
+        echo "Summary:"
+        for dir in */; do
+          if [ -d "$dir" ] && [ "$dir" != "downloads/" ]; then
+            file_count=$(find "$dir" -type f | wc -l)
+            folder_size=$(du -sh "$dir" | cut -f1)
+            echo "$dir - $file_count files ($folder_size)"
+          fi
+        done
+
+    - name: Create tar.gz archive
+      if: inputs.action_type == 'create_archive'
+      id: create_archive
+      run: |
+        echo "Creating tar.gz archive..."
+        
+        target_folder="${{ inputs.target_folder }}"
+        
+        mkdir -p archives
+        
+        # Determine what to archive and set archive name
+        if [ -n "$target_folder" ]; then
+          # Archive specific folder
+          if [ -d "$target_folder" ]; then
+            echo "Archiving folder: $target_folder"
+            
+            # Use folder name as archive name
+            archive_name=$(echo "$target_folder" | sed 's|/$||' | sed 's/[^a-zA-Z0-9._-]/_/g')
+            archive_file="${archive_name}.tar.gz"
+            
+            tar -czf "archives/$archive_file" "$target_folder"
+            echo "archive_source=$target_folder" >> $GITHUB_OUTPUT
+          else
+            echo "Error: Folder '$target_folder' not found"
+            echo "Available folders:"
+            ls -d */ | grep -v "downloads/"
+            exit 1
+          fi
+        else
+          # Archive all extracted folders
+          echo "Archiving all extracted folders..."
+          folders_to_archive=""
+          folder_names=""
+          
+          for dir in */; do
+            if [ -d "$dir" ] && [ "$dir" != "downloads/" ] && [ "$dir" != "archives/" ]; then
+              folders_to_archive="$folders_to_archive $dir"
+              clean_name=$(echo "$dir" | sed 's|/$||')
+              if [ -z "$folder_names" ]; then
+                folder_names="$clean_name"
+              else
+                folder_names="${folder_names}_${clean_name}"
+              fi
+            fi
+          done
+          
+          if [ -z "$folders_to_archive" ]; then
+            echo "Error: No folders to archive"
+            exit 1
+          fi
+          
+          # Create archive name from all folder names (limit length)
+          if [ ${#folder_names} -gt 50 ]; then
+            # If too long, use generic name with count
+            folder_count=$(echo $folders_to_archive | wc -w)
+            archive_name="extracted_${folder_count}_folders"
+          else
+            archive_name="$folder_names"
+          fi
+          
+          archive_name=$(echo "$archive_name" | sed 's/[^a-zA-Z0-9._-]/_/g')
+          archive_file="${archive_name}.tar.gz"
+          
+          echo "Folders to archive:$folders_to_archive"
+          tar -czf "archives/$archive_file" $folders_to_archive
+          echo "archive_source=all folders" >> $GITHUB_OUTPUT
+        fi
+        
+        # Get archive info
+        if [ -f "archives/$archive_file" ]; then
+          archive_size=$(ls -lh "archives/$archive_file" | awk '{print $5}')
+          
+          echo "archive_file=$archive_file" >> $GITHUB_OUTPUT
+          echo "archive_size=$archive_size" >> $GITHUB_OUTPUT
+          echo "archive_name=$archive_name" >> $GITHUB_OUTPUT
+          
+          echo "Archive created successfully:"
+          echo "Name: $archive_name"
+          echo "File: $archive_file"
+          echo "Size: $archive_size"
+          
+          # Verify archive
+          echo ""
+          echo "Archive contents:"
+          tar -tzf "archives/$archive_file" | head -20
+          total_files=$(tar -tzf "archives/$archive_file" | wc -l)
+          if [ $total_files -gt 20 ]; then
+            echo "... and $((total_files - 20)) more files"
+          fi
+        else
+          echo "Error: Failed to create archive"
+          exit 1
+        fi
+
+    - name: Upload archive to release
+      if: inputs.action_type == 'create_archive'
+      run: |
+        archive_file="${{ steps.create_archive.outputs.archive_file }}"
+        archive_name="${{ steps.create_archive.outputs.archive_name }}"
+        
+        # Check if release exists
+        if gh release view ${{ inputs.tag_name }} >/dev/null 2>&1; then
+          echo "Deleting existing release..."
+          gh release delete ${{ inputs.tag_name }} -y
+          git push --delete origin ${{ inputs.tag_name }} 2>/dev/null || true
+        fi
+        
+        # Create new release with archive
+        echo "Creating release with archive..."
+        gh release create ${{ inputs.tag_name }} \
+          "archives/$archive_file" \
+          --title "${{ inputs.tag_name }}" \
+          --notes "Archive: $archive_name
+        
+        Source: ${{ steps.create_archive.outputs.archive_source }}
+        Size: ${{ steps.create_archive.outputs.archive_size }}
+        Downloaded from: ${{ inputs.download_urls }}
+        Created: $(date)"
+        
+        echo "Release created successfully"
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Commit extracted files to repository
+      if: inputs.action_type == 'extract_to_folder'
+      run: |
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+        
+        for dir in */; do
+          if [ -d "$dir" ] && [ "$dir" != "downloads/" ]; then
+            git add "$dir"
+          fi
+        done
+        
+        if git diff --staged --quiet; then
+          echo "No changes to commit"
+        else
+          git commit -m "Add extracted files - Files: ${{ steps.download.outputs.total_files }} - Date: $(date)"
+          git push
+          echo "Pushed to repository"
+        fi
+
+    - name: Check if release exists
+      if: inputs.action_type == 'upload_to_release'
+      id: check
+      continue-on-error: true
+      run: |
+        if gh release view ${{ inputs.tag_name }} >/dev/null 2>&1; then
+          echo "exists=true" >> $GITHUB_OUTPUT
+        else
+          echo "exists=false" >> $GITHUB_OUTPUT
+        fi
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Delete existing release
+      if: inputs.action_type == 'upload_to_release' && steps.check.outputs.exists == 'true'
+      run: |
+        gh release delete ${{ inputs.tag_name }} -y
+        git push --delete origin ${{ inputs.tag_name }}
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Create release
+      if: inputs.action_type == 'upload_to_release'
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: ${{ inputs.tag_name }}
+        name: ${{ inputs.tag_name }}
+        body: |
+          Downloaded Files Release
+          
+          Sources: ${{ inputs.download_urls }}
+          Total Files: ${{ steps.download.outputs.total_files }}
+          Date: ${{ github.run_id }}
+        files: downloads/*
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Summary
+      run: |
+        if [ "${{ inputs.action_type }}" = "upload_to_release" ]; then
+          echo "Release created: ${{ inputs.tag_name }}"
+          echo "Total files: ${{ steps.download.outputs.total_files }}"
+          ls -1 downloads/
+        elif [ "${{ inputs.action_type }}" = "create_archive" ]; then
+          echo "Archive created: ${{ steps.create_archive.outputs.archive_file }}"
+          echo "Size: ${{ steps.create_archive.outputs.archive_size }}"
+          echo "Source: ${{ steps.create_archive.outputs.archive_source }}"
+          echo "Released as: ${{ inputs.tag_name }}"
+        else
+          echo "Extracted to folders:"
+          ls -d */ | grep -v "downloads/"
+        fi
